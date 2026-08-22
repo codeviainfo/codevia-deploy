@@ -1,0 +1,172 @@
+services:
+
+  # ─────────────────────────────────────────────
+  # Reverse proxy + SSL automático
+  # ─────────────────────────────────────────────
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy:1.6
+    container_name: nginx-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - nginx-certs:/etc/nginx/certs:ro
+      - ./vhost.d:/etc/nginx/vhost.d
+      - nginx-html:/usr/share/nginx/html
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+    networks:
+      - codevia-proxy-net
+
+  acme-companion:
+    image: nginxproxy/acme-companion:2.4
+    container_name: nginx-acme-companion
+    restart: unless-stopped
+    environment:
+      DEFAULT_EMAIL: ${LETSENCRYPT_EMAIL}
+      NGINX_PROXY_CONTAINER: nginx-proxy
+    volumes:
+      - nginx-certs:/etc/nginx/certs
+      - ./vhost.d:/etc/nginx/vhost.d
+      - nginx-html:/usr/share/nginx/html
+      - nginx-acme:/etc/acme.sh
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - nginx-proxy
+    networks:
+      - codevia-proxy-net
+
+  # ─────────────────────────────────────────────
+  # Landing page (codeviaesp.com + www)
+  # ─────────────────────────────────────────────
+  landing:
+    container_name: codevia-landing
+    build:
+      context: ../codevia-landing
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      VIRTUAL_HOST: "${LANDING_DOMAIN},www.${LANDING_DOMAIN}"
+      VIRTUAL_PORT: "80"
+      LETSENCRYPT_HOST: "${LANDING_DOMAIN},www.${LANDING_DOMAIN}"
+    networks:
+      - codevia-proxy-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ─────────────────────────────────────────────
+  # Demos en vivo (subdominios de ejemplo, 100% estáticas)
+  # Un único contenedor nginx sirve las 3 plantillas,
+  # enrutadas por Host header (ver CODEVIA-DEMOS/nginx.conf).
+  # ─────────────────────────────────────────────
+  demos:
+    container_name: codevia-demos
+    build:
+      context: ../CODEVIA-DEMOS
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      VIRTUAL_HOST: "${DEMO_RESTAURANTE_DOMAIN},${DEMO_CLINICA_DOMAIN},${DEMO_TIENDA_DOMAIN}"
+      VIRTUAL_PORT: "80"
+      LETSENCRYPT_HOST: "${DEMO_RESTAURANTE_DOMAIN},${DEMO_CLINICA_DOMAIN},${DEMO_TIENDA_DOMAIN}"
+    networks:
+      - codevia-proxy-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ─────────────────────────────────────────────
+  # CRM — Base de datos
+  # ─────────────────────────────────────────────
+  crm-db:
+    image: postgres:16-alpine
+    container_name: codevia-crm-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - crm-postgres-data:/var/lib/postgresql/data
+    networks:
+      - codevia-proxy-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ─────────────────────────────────────────────
+  # CRM — Backend API (no expuesto al exterior)
+  # ─────────────────────────────────────────────
+  crm-backend:
+    container_name: codevia-crm-backend
+    build:
+      context: ../codeviacrm/backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@codevia-crm-db:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
+      PORT: "4000"
+    depends_on:
+      crm-db:
+        condition: service_healthy
+    networks:
+      - codevia-proxy-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/api/health > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ─────────────────────────────────────────────
+  # CRM — Frontend (crm.codeviaesp.com)
+  # El tráfico /api/* es redirigido al backend por
+  # el override en vhost.d/crm.codeviaesp.com
+  # ─────────────────────────────────────────────
+  crm-frontend:
+    container_name: codevia-crm-frontend
+    build:
+      context: ../codeviacrm/frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: https://${CRM_DOMAIN}/api
+    restart: unless-stopped
+    environment:
+      VIRTUAL_HOST: "${CRM_DOMAIN}"
+      VIRTUAL_PORT: "5173"
+      LETSENCRYPT_HOST: "${CRM_DOMAIN}"
+    depends_on:
+      crm-backend:
+        condition: service_healthy
+    networks:
+      - codevia-proxy-net
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:5173/', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  codevia-proxy-net:
+    name: codevia-proxy-net
+
+volumes:
+  nginx-certs:
+  nginx-html:
+  nginx-acme:
+  crm-postgres-data:
