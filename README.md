@@ -13,6 +13,7 @@ Internet :80/:443
           ├─► demo-restaurante.codeviaesp.com  ┐
           ├─► demo-clinica.codeviaesp.com      ├─► codevia-demos:80  (nginx, 3 estáticas por Host header)
           ├─► demo-tienda.codeviaesp.com       ┘
+          ├─► hugo.codeviaesp.com  → codevia-portfolio-hugo:80 (nginx, estático)
           └─► crm.codeviaesp.com
                 ├─► /api/*  → codevia-crm-backend:4000     (Express API)
                 └─► /*      → codevia-crm-frontend:5173    (Vite preview)
@@ -38,6 +39,7 @@ Solo `nginx-proxy` publica los puertos 80 y 443. Las apps no exponen puertos al 
    | A | `demo-restaurante.codeviaesp.com` | `<IP-servidor>` |
    | A | `demo-clinica.codeviaesp.com` | `<IP-servidor>` |
    | A | `demo-tienda.codeviaesp.com` | `<IP-servidor>` |
+   | A | `hugo.codeviaesp.com` | `<IP-servidor>` |
 3. **Puertos 80 y 443 abiertos** en el firewall del servidor (ver sección Firewall).
 
 ---
@@ -97,6 +99,15 @@ make demos-logs        # Logs en tiempo real
 make rebuild-demos     # Tras un git pull: reconstruye imagen y redeploya
 ```
 
+### Portfolio de Hugo (hugo.codeviaesp.com)
+```bash
+make hugo-up          # Levantar
+make hugo-down        # Parar
+make hugo-restart     # Reiniciar
+make hugo-logs        # Logs en tiempo real
+make rebuild-hugo     # Tras un git pull: reconstruye imagen y redeploya
+```
+
 ### CRM (crm.codeviaesp.com)
 ```bash
 make crm-up           # Levantar DB + backend + frontend
@@ -123,6 +134,7 @@ git pull
 # Luego, desde deploy/:
 make rebuild-landing   # solo si cambió la landing
 make rebuild-demos     # solo si cambió alguna plantilla demo
+make rebuild-hugo      # solo si cambió el portfolio de Hugo
 make rebuild-crm       # solo si cambió el CRM
 ```
 

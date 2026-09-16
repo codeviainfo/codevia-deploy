@@ -83,6 +83,30 @@ services:
       start_period: 10s
 
   # ─────────────────────────────────────────────
+  # Portfolio de Hugo (hugo.codeviaesp.com)
+  # Estático puro servido por nginx — ~6 MB de RAM.
+  # server_name literal en CODEVIA-PORTFOLIO-HUGO/nginx.conf.
+  # ─────────────────────────────────────────────
+  portfolio-hugo:
+    container_name: codevia-portfolio-hugo
+    build:
+      context: ../CODEVIA-PORTFOLIO-HUGO
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      VIRTUAL_HOST: "${PORTFOLIO_HUGO_DOMAIN}"
+      VIRTUAL_PORT: "80"
+      LETSENCRYPT_HOST: "${PORTFOLIO_HUGO_DOMAIN}"
+    networks:
+      - codevia-proxy-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ─────────────────────────────────────────────
   # CRM — Base de datos
   # ─────────────────────────────────────────────
   crm-db:
