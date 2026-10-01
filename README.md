@@ -14,14 +14,25 @@ Internet :80/:443
           ├─► demo-clinica.codeviaesp.com      ├─► codevia-demos:80  (nginx, 3 estáticas por Host header)
           ├─► demo-tienda.codeviaesp.com       ┘
           ├─► hugo.codeviaesp.com  → codevia-portfolio-hugo:80 (nginx, estático)
-          └─► crm.codeviaesp.com
-                ├─► /api/*  → codevia-crm-backend:4000     (Express API)
-                └─► /*      → codevia-crm-frontend:5173    (Vite preview)
+          ├─► crm.codeviaesp.com
+          │     ├─► /api/*  → codevia-crm-backend:4000     (Express API)
+          │     └─► /*      → codevia-crm-frontend:5173    (Vite preview)
+          ├─► cordobabets.codeviaesp.com → cordobabets-web:80
+          │         (su propio nginx hace /api/ → cordobabets-api:3000)
+          ├─► auditoria.codeviaesp.com   → auditoria-web:80
+          │         (su propio nginx hace /api/ → auditoria-api:3000)
+          └─► gw.codeviaesp.com          → auditoria-gateway:3100
+                    (SSE: proxy_buffering off en vhost.d/gw…_location)
 
 acme-companion  emite/renueva certs Let's Encrypt automáticamente
 
-codevia-crm-backend ──Prisma──► codevia-crm-db:5432 (PostgreSQL 16)
+Un solo motor de PostgreSQL 16 (codevia-crm-db:5432) con una base por proyecto:
+    codevia_crm · cordobabets · auditoria_ia
 ```
+
+El gateway de IA es el único servicio en el camino crítico de un tercero: si se cae, los
+empleados del cliente no pueden trabajar. Por eso va en su propio contenedor, separado de
+su API, y se para con 60 s de gracia para no cortar respuestas a medias.
 
 Solo `nginx-proxy` publica los puertos 80 y 443. Las apps no exponen puertos al host.
 
@@ -40,6 +51,9 @@ Solo `nginx-proxy` publica los puertos 80 y 443. Las apps no exponen puertos al 
    | A | `demo-clinica.codeviaesp.com` | `<IP-servidor>` |
    | A | `demo-tienda.codeviaesp.com` | `<IP-servidor>` |
    | A | `hugo.codeviaesp.com` | `<IP-servidor>` |
+   | A | `cordobabets.codeviaesp.com` | `<IP-servidor>` |
+   | A | `auditoria.codeviaesp.com` | `<IP-servidor>` |
+   | A | `gw.codeviaesp.com` | `<IP-servidor>` |
 3. **Puertos 80 y 443 abiertos** en el firewall del servidor (ver sección Firewall).
 
 ---
@@ -117,6 +131,45 @@ make crm-logs         # Logs en tiempo real de backend y frontend
 make rebuild-crm      # Tras un git pull: reconstruye y redeploya
 ```
 
+### Córdoba Bets (cordobabets.codeviaesp.com)
+
+```bash
+make cb-up            # API + web
+make cb-logs
+make rebuild-cb
+make cb-init          # solo la primera vez: crea la BD, migra y siembra
+make cb-importar      # carga el histórico de Pickeando
+```
+
+### Auditoría de IA (auditoria.codeviaesp.com + gw.codeviaesp.com)
+
+```bash
+make ia-up            # API + gateway + panel
+make ia-logs
+make rebuild-ia
+make ia-init          # solo la primera vez: crea la BD, migra y siembra
+make ia-migrar        # aplica migraciones pendientes
+make ia-sembrar       # recarga catálogo de modelos y consejos (idempotente)
+```
+
+**Antes del primer `make ia-up` hay que crear la clave maestra**, que es lo que cifra las
+claves de API de los clientes. No está en `.env` ni en git, es un fichero montado como
+secreto de Docker para que no aparezca en `docker inspect`:
+
+```bash
+mkdir -p secretos
+openssl rand -base64 32 | sed 's/^/g1:/' > secretos/clave_maestra
+chmod 600 secretos/clave_maestra
+```
+
+⚠️ **Guardar una copia de ese fichero fuera del servidor**, en el gestor de contraseñas.
+Si se pierde, las credenciales de proveedor de todos los clientes son irrecuperables y el
+servicio cae para todos a la vez. Un backup de PostgreSQL sin la clave maestra no sirve
+para restaurarlas — que es, de hecho, la propiedad que se busca.
+
+El gateway tarda en parar: tiene `stop_grace_period: 60s` porque al recibir SIGTERM espera
+a que terminen los streams en curso antes de cerrar. Es a propósito.
+
 ### Proxy y certificados
 ```bash
 make certs            # Ver logs del acme-companion (estado de certificados)
@@ -151,16 +204,24 @@ el proxy ni la base de datos.
 | `nginx-certs` | Certificados TLS emitidos por Let's Encrypt |
 | `nginx-html` | Archivos temporales de desafío ACME |
 | `nginx-acme` | Estado interno de acme.sh |
+| `auditoria-cola` | Cola en disco del gateway de IA: eventos que no pudieron llegar a PostgreSQL. Se reingiere al arrancar |
 
 Los volúmenes **sobreviven** a `make down`. Solo se pierden con:
 ```bash
 docker compose -f docker-compose.yml down -v   # ¡BORRA los datos!
 ```
 
-Para hacer backup de la base de datos:
+Para hacer backup. Ojo: en el contenedor `codevia-crm-db` conviven **tres** bases de
+datos, una por proyecto. `pg_dump` de una sola no las salva todas:
 ```bash
-docker exec codevia-crm-db pg_dump -U codevia codevia_crm > backup_$(date +%Y%m%d).sql
+# Una base concreta
+docker exec codevia-crm-db pg_dump -U codevia codevia_crm > crm_$(date +%Y%m%d).sql
+
+# Todas de golpe, que es lo que casi siempre se quiere
+docker exec codevia-crm-db pg_dumpall -U codevia > todo_$(date +%Y%m%d).sql
 ```
+El backup de `auditoria_ia` contiene las claves de API de los clientes **cifradas**. Sin
+el fichero `secretos/clave_maestra` no se pueden restaurar: hay que guardar los dos.
 
 ---
 

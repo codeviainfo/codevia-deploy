@@ -17,6 +17,10 @@ services:
       - /var/run/docker.sock:/tmp/docker.sock:ro
     networks:
       - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 64M
 
   acme-companion:
     image: nginxproxy/acme-companion:2.4
@@ -35,6 +39,10 @@ services:
       - nginx-proxy
     networks:
       - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 48M
 
   # ─────────────────────────────────────────────
   # Landing page (codeviaesp.com + www)
@@ -51,6 +59,10 @@ services:
       LETSENCRYPT_HOST: "${LANDING_DOMAIN},www.${LANDING_DOMAIN}"
     networks:
       - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 32M
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:80/ > /dev/null || exit 1"]
       interval: 30s
@@ -75,6 +87,10 @@ services:
       LETSENCRYPT_HOST: "${DEMO_RESTAURANTE_DOMAIN},${DEMO_CLINICA_DOMAIN},${DEMO_TIENDA_DOMAIN}"
     networks:
       - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 32M
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ > /dev/null || exit 1"]
       interval: 30s
@@ -99,6 +115,10 @@ services:
       LETSENCRYPT_HOST: "${PORTFOLIO_HUGO_DOMAIN}"
     networks:
       - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 32M
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ > /dev/null || exit 1"]
       interval: 30s
@@ -121,6 +141,10 @@ services:
       - crm-postgres-data:/var/lib/postgresql/data
     networks:
       - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 384M
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -137,10 +161,12 @@ services:
       context: ../codeviacrm/backend
       dockerfile: Dockerfile
     restart: unless-stopped
+    shm_size: 256m
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@codevia-crm-db:5432/${POSTGRES_DB}
       JWT_SECRET: ${JWT_SECRET}
       GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY}
+      SCRAPER_PROXY_URLS: ${SCRAPER_PROXY_URLS:-}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
       PORT: "4000"
@@ -149,6 +175,10 @@ services:
         condition: service_healthy
     networks:
       - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 320M
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:4000/api/health > /dev/null || exit 1"]
       interval: 30s
@@ -178,12 +208,219 @@ services:
         condition: service_healthy
     networks:
       - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 192M
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:5173/', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\""]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  # ─────────────────────────────────────────────
+  # Córdoba Bets — API (cordobabets.codeviaesp.com/api)
+  # No se expone al proxy: solo la alcanza el nginx
+  # del frontend, por la red interna de Docker.
+  #
+  # Comparte la instancia de PostgreSQL del CRM, pero
+  # con base de datos propia: un motor menos en un VPS
+  # de 1,6 GB. Hay que crearla una vez (ver README).
+  # ─────────────────────────────────────────────
+  cordobabets-api:
+    container_name: cordobabets-api
+    build:
+      context: ../CORDOBA-BETS/backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@codevia-crm-db:5432/${CORDOBABETS_DB}
+      JWT_SECRET: ${CORDOBABETS_JWT_SECRET}
+      SEED_ADMIN_EMAIL: ${CORDOBABETS_ADMIN_EMAIL}
+      SEED_ADMIN_PASSWORD: ${CORDOBABETS_ADMIN_PASSWORD}
+      SEED_ADMIN_NOMBRE: ${CORDOBABETS_ADMIN_NOMBRE}
+      NODE_ENV: production
+      PORT: "3000"
+    depends_on:
+      crm-db:
+        condition: service_healthy
+    networks:
+      - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/salud > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ─────────────────────────────────────────────
+  # Córdoba Bets — Web (cordobabets.codeviaesp.com)
+  # Estático servido por nginx (~6 MB de RAM) que
+  # además hace de puerta de la API en /api/.
+  # server_name literal en CORDOBA-BETS/frontend/nginx.conf.
+  # ─────────────────────────────────────────────
+  cordobabets-web:
+    container_name: cordobabets-web
+    build:
+      context: ../CORDOBA-BETS/frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      VIRTUAL_HOST: "${CORDOBABETS_DOMAIN}"
+      VIRTUAL_PORT: "80"
+      LETSENCRYPT_HOST: "${CORDOBABETS_DOMAIN}"
+    depends_on:
+      cordobabets-api:
+        condition: service_healthy
+    networks:
+      - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ─────────────────────────────────────────────
+  # Auditoría de IA — API del panel
+  # No se expone al proxy: solo la alcanza el nginx
+  # de auditoria-web, por la red interna de Docker.
+  #
+  # Comparte el PostgreSQL del CRM con base propia,
+  # igual que Córdoba Bets. Crearla con `make ia-init`.
+  # ─────────────────────────────────────────────
+  auditoria-api:
+    container_name: auditoria-api
+    build:
+      context: ../CODEVIA-AUDITORIA-IA
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@codevia-crm-db:5432/${AUDITORIA_DB}?connection_limit=4&pool_timeout=10
+      JWT_SECRET: ${AUDITORIA_JWT_SECRET}
+      CLAVE_MAESTRA_ACTUAL: /run/secrets/clave_maestra
+      CLAVES_MAESTRAS_ANTIGUAS: ${AUDITORIA_CLAVES_ANTIGUAS:-}
+      SECRETO_INTERNO: ${AUDITORIA_SECRETO_INTERNO}
+      SEED_ADMIN_EMAIL: ${AUDITORIA_ADMIN_EMAIL}
+      SEED_ADMIN_PASSWORD: ${AUDITORIA_ADMIN_PASSWORD}
+      SEED_ADMIN_NOMBRE: ${AUDITORIA_ADMIN_NOMBRE}
+      NODE_ENV: production
+      PORT: "3000"
+    # La clave maestra va como fichero y no como variable de entorno:
+    # así no aparece en `docker inspect` ni en /proc/<pid>/environ.
+    secrets:
+      - clave_maestra
+    depends_on:
+      crm-db:
+        condition: service_healthy
+    networks:
+      - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/salud > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ─────────────────────────────────────────────
+  # Auditoría de IA — Gateway LLM (gw.codeviaesp.com)
+  #
+  # Camino crítico: si se cae, ningún empleado del
+  # cliente puede trabajar. Por eso va aparte de la
+  # API y tiene su propio subdominio.
+  #
+  # stop_grace_period 60s: al parar hay que esperar a
+  # que terminen los streams en curso y vaciar el
+  # buffer de eventos. Con los 10s por defecto llega
+  # SIGKILL a media respuesta y se pierde facturación.
+  #
+  # El SSE necesita además `proxy_buffering off` en el
+  # proxy central: vhost.d/gw.codeviaesp.com_location
+  # ─────────────────────────────────────────────
+  auditoria-gateway:
+    container_name: auditoria-gateway
+    build:
+      context: ../CODEVIA-AUDITORIA-IA
+      dockerfile: gateway/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@codevia-crm-db:5432/${AUDITORIA_DB}?connection_limit=3&pool_timeout=10
+      CLAVE_MAESTRA_ACTUAL: /run/secrets/clave_maestra
+      CLAVES_MAESTRAS_ANTIGUAS: ${AUDITORIA_CLAVES_ANTIGUAS:-}
+      SECRETO_INTERNO: ${AUDITORIA_SECRETO_INTERNO}
+      VIRTUAL_HOST: "${GATEWAY_DOMAIN}"
+      VIRTUAL_PORT: "3100"
+      LETSENCRYPT_HOST: "${GATEWAY_DOMAIN}"
+      NODE_ENV: production
+      PUERTO_GATEWAY: "3100"
+    secrets:
+      - clave_maestra
+    volumes:
+      # Cola de emergencia: eventos que no pudieron llegar a Postgres.
+      # Se reingiere al arrancar. Sin esto, cada reinicio del motor
+      # (compartido con otras tres bases) es un agujero de facturación.
+      - auditoria-cola:/app/datos
+    stop_grace_period: 60s
+    depends_on:
+      crm-db:
+        condition: service_healthy
+    networks:
+      - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3100/salud > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # ─────────────────────────────────────────────
+  # Auditoría de IA — Panel (auditoria.codeviaesp.com)
+  # Estático servido por nginx, que además hace de
+  # puerta de la API en /api/.
+  # server_name literal en CODEVIA-AUDITORIA-IA/frontend/nginx.conf.
+  # ─────────────────────────────────────────────
+  auditoria-web:
+    container_name: auditoria-web
+    build:
+      context: ../CODEVIA-AUDITORIA-IA/frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      VIRTUAL_HOST: "${AUDITORIA_DOMAIN}"
+      VIRTUAL_PORT: "80"
+      LETSENCRYPT_HOST: "${AUDITORIA_DOMAIN}"
+    depends_on:
+      auditoria-api:
+        condition: service_healthy
+    networks:
+      - codevia-proxy-net
+    deploy:
+      resources:
+        limits:
+          memory: 48M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 networks:
   codevia-proxy-net:
@@ -194,3 +431,13 @@ volumes:
   nginx-html:
   nginx-acme:
   crm-postgres-data:
+  auditoria-cola:
+
+# La clave maestra que cifra las claves de API de los clientes.
+# Fichero con permisos 600 en el servidor, NUNCA en git ni en .env:
+# como secreto no aparece en `docker inspect`.
+#   openssl rand -base64 32 | sed 's/^/g1:/' > secretos/clave_maestra
+#   chmod 600 secretos/clave_maestra
+secrets:
+  clave_maestra:
+    file: ./secretos/clave_maestra

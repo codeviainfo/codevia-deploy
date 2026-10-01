@@ -1,0 +1,40 @@
+# Gateway LLM — ajustes para Server-Sent Events.
+#
+# ⚠️ El nombre del fichero termina en `_location` A PROPÓSITO.
+# nginx-proxy inyecta `vhost.d/<dominio>` dentro del bloque `server{}`
+# y `vhost.d/<dominio>_location` dentro del `location /` que él mismo
+# genera. Como aquí hace falta tocar el location y no se puede
+# declarar otro `location /` (colisionaría con el generado, nginx no
+# arrancaría y se caerían los otros seis servicios), va en este.
+#
+# Si cambias GATEWAY_DOMAIN en .env, hay que renombrar este fichero.
+# Comprobar lo que realmente se aplica con:
+#   docker exec nginx-proxy nginx -T | grep -A20 'server_name gw\.'
+
+# Sin esto nginx acumula la respuesta y el streaming llega de golpe:
+# el empleado ve una pausa larga y luego todo el texto de una vez.
+proxy_buffering off;
+proxy_request_buffering off;
+proxy_cache off;
+
+# gzip sobre SSE también bufferiza, por chunks.
+gzip off;
+
+# Necesario para mantener viva la conexión hacia el backend.
+proxy_http_version 1.1;
+proxy_set_header Connection '';
+
+# El defecto de nginx son 60 s. Un modelo con razonamiento extendido y
+# un prompt grande puede pasar de 60 s SIN EMITIR UN SOLO BYTE durante
+# el prefill: nginx cortaría y el cliente vería un stream truncado sin
+# ningún error. El gateway manda además un heartbeat `: keepalive`
+# cada 15 s como cinturón, por si hay otro proxy por el camino que no
+# controlamos (el del propio cliente, por ejemplo).
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+proxy_connect_timeout 10s;
+
+# NO poner `chunked_transfer_encoding off`: circula en los tutoriales
+# de SSE, pero si el backend no manda Content-Length obliga a nginx a
+# cerrar la conexión para delimitar el cuerpo, que es lo contrario de
+# lo que queremos.
