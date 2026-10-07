@@ -170,6 +170,11 @@ para restaurarlas — que es, de hecho, la propiedad que se busca.
 El gateway tarda en parar: tiene `stop_grace_period: 60s` porque al recibir SIGTERM espera
 a que terminen los streams en curso antes de cerrar. Es a propósito.
 
+**Copiar también `vhost.d/auditoria.codeviaesp.com`** a `/opt/codevia/deploy/vhost.d/` (y
+reiniciar `nginx-proxy`). Sube a 10 MB el límite de cuerpo del panel: sin él, cuando un
+empleado envíe meses de uso con el comando de auditoría, nginx-proxy lo cortará con un 413
+antes de llegar a la API.
+
 ### Proxy y certificados
 ```bash
 make certs            # Ver logs del acme-companion (estado de certificados)
