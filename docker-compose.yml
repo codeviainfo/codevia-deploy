@@ -169,6 +169,14 @@ services:
       SCRAPER_PROXY_URLS: ${SCRAPER_PROXY_URLS:-}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD}
+      # Claude API (módulo de Diseño). Vacía = el módulo devuelve error al generar.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Google Calendar (sincronización de citas). Sin ID/SECRET la
+      # integración queda desactivada y el CRM funciona igual.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: https://${CRM_DOMAIN}/api/google/callback
+      APP_URL: https://${CRM_DOMAIN}
       PORT: "4000"
     depends_on:
       crm-db:
