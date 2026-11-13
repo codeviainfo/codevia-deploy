@@ -1,5 +1,11 @@
 COMPOSE := docker compose -f docker-compose.yml
 
+# make NO lee .env (eso lo hace docker compose por su cuenta): los valores que
+# necesitan los comandos de aquí se sacan de él con esta función.
+#   $(call env,POSTGRES_USER)  →  codevia
+# Si una variable sale repetida en .env gana la última, igual que en compose.
+env = $(shell sed -n 's/^$(1)=//p' .env 2>/dev/null | tr -d '\r' | tail -n 1)
+
 .DEFAULT_GOAL := help
 
 .PHONY: help up down ps \
@@ -161,8 +167,10 @@ rebuild-cb:
 # Crea la base de datos (solo la primera vez; si ya existe no pasa nada),
 # aplica el esquema y da de alta al usuario del panel.
 cb-init:
-	$(COMPOSE) exec -T crm-db psql -U $$POSTGRES_USER -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='$$CORDOBABETS_DB'" | grep -q 1 || \
-		$(COMPOSE) exec -T crm-db psql -U $$POSTGRES_USER -d postgres -c "CREATE DATABASE $$CORDOBABETS_DB"
+	@test -n "$(call env,POSTGRES_USER)" -a -n "$(call env,CORDOBABETS_DB)" || \
+		{ echo "Faltan POSTGRES_USER o CORDOBABETS_DB en .env"; exit 1; }
+	$(COMPOSE) exec -T crm-db psql -U "$(call env,POSTGRES_USER)" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='$(call env,CORDOBABETS_DB)'" | grep -q 1 || \
+		$(COMPOSE) exec -T crm-db psql -U "$(call env,POSTGRES_USER)" -d postgres -c "CREATE DATABASE \"$(call env,CORDOBABETS_DB)\""
 	$(COMPOSE) exec -T cordobabets-api npm run prisma:migrate
 	$(COMPOSE) exec -T cordobabets-api npm run seed
 
