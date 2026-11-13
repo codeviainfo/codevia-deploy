@@ -1,60 +1,54 @@
 # Codevia — Orquestación Docker de producción
 
-Todos los comandos se ejecutan **dentro de esta carpeta `deploy/`** (o con la ruta explícita `-f deploy/docker-compose.yml` desde la raíz).
+Todos los comandos se ejecutan **dentro de esta carpeta `deploy/`**. En el servidor actual
+(máquina virtual `vm-hugo` del Proxmox compartido, desde 2026-11-13) vive en
+`~/stacks/codevia/deploy`, junto a los repos de cada proyecto (`../codeviacrm`,
+`../CORDOBA-BETS`, etc.: el compose los construye con rutas relativas).
 
 ---
 
 ## Arquitectura
 
 ```
-Internet :80/:443
-    └─► nginx-proxy
+Internet ─► Cloudflare (HTTPS, DNS de codeviaesp.com)
+              └─► Cloudflare Tunnel "tunnel-hugo"
+                    └─► cloudflared (stack aparte: ~/stacks/cloudflared)
+                          └─► nginx-proxy:80   (reparte por Host header)
           ├─► codeviaesp.com / www  → codevia-landing:80   (Vite+React / nginx)
           ├─► demo-restaurante.codeviaesp.com  ┐
-          ├─► demo-clinica.codeviaesp.com      ├─► codevia-demos:80  (nginx, 3 estáticas por Host header)
-          ├─► demo-tienda.codeviaesp.com       ┘
+          ├─► demo-clinica.codeviaesp.com      ├─► codevia-demos:80  (nginx, estáticas por Host header)
+          ├─► demo-tienda.codeviaesp.com       │
+          ├─► demo-asesoria.codeviaesp.com     ┘
           ├─► hugo.codeviaesp.com  → codevia-portfolio-hugo:80 (nginx, estático)
           ├─► crm.codeviaesp.com
           │     ├─► /api/*  → codevia-crm-backend:4000     (Express API)
           │     └─► /*      → codevia-crm-frontend:5173    (Vite preview)
           ├─► cordobabets.codeviaesp.com → cordobabets-web:80
           │         (su propio nginx hace /api/ → cordobabets-api:3000)
-          ├─► auditoria.codeviaesp.com   → auditoria-web:80
-          │         (su propio nginx hace /api/ → auditoria-api:3000)
-          └─► gw.codeviaesp.com          → auditoria-gateway:3100
-                    (SSE: proxy_buffering off en vhost.d/gw…_location)
-
-acme-companion  emite/renueva certs Let's Encrypt automáticamente
+          └─► breakpoint.codeviaesp.com  → breakpoint-web:80
+                    (su propio nginx hace /api/ → breakpoint-api:3000)
 
 Un solo motor de PostgreSQL 16 (codevia-crm-db:5432) con una base por proyecto:
-    codevia_crm · cordobabets · auditoria_ia
+    codevia_crm · cordobabets · breakpoint
 ```
 
-El gateway de IA es el único servicio en el camino crítico de un tercero: si se cae, los
-empleados del cliente no pueden trabajar. Por eso va en su propio contenedor, separado de
-su API, y se para con 60 s de gracia para no cortar respuestas a medias.
-
-Solo `nginx-proxy` publica los puertos 80 y 443. Las apps no exponen puertos al host.
+- **No hay puertos abiertos a internet.** `cloudflared` abre una conexión de salida hacia
+  Cloudflare; el HTTPS lo pone Cloudflare. `nginx-proxy` solo escucha en
+  `127.0.0.1:8088` para pruebas desde la propia máquina:
+  `curl -H "Host: crm.codeviaesp.com" http://127.0.0.1:8088/`
+- **IP real del visitante:** `cloudflare-realip.conf` hace que `nginx-proxy` se fíe de la
+  cabecera `CF-Connecting-IP`. Sin él, todas las visitas parecen venir de `cloudflared`
+  y los frenos por IP (login de Córdoba Bets / Breakpoint, tracking del CRM) meten a
+  todo el mundo en el mismo saco.
 
 ---
 
 ## Requisitos previos
 
-1. **Docker** y **Docker Compose** v2 instalados en el servidor.
-2. **Registros DNS** apuntando a la IP pública del servidor:
-   | Tipo | Nombre | Valor |
-   |------|--------|-------|
-   | A | `codeviaesp.com` | `<IP-servidor>` |
-   | A | `www.codeviaesp.com` | `<IP-servidor>` |
-   | A | `crm.codeviaesp.com` | `<IP-servidor>` |
-   | A | `demo-restaurante.codeviaesp.com` | `<IP-servidor>` |
-   | A | `demo-clinica.codeviaesp.com` | `<IP-servidor>` |
-   | A | `demo-tienda.codeviaesp.com` | `<IP-servidor>` |
-   | A | `hugo.codeviaesp.com` | `<IP-servidor>` |
-   | A | `cordobabets.codeviaesp.com` | `<IP-servidor>` |
-   | A | `auditoria.codeviaesp.com` | `<IP-servidor>` |
-   | A | `gw.codeviaesp.com` | `<IP-servidor>` |
-3. **Puertos 80 y 443 abiertos** en el firewall del servidor (ver sección Firewall).
+1. **Docker** y **Docker Compose** v2. El usuario del servidor, en el grupo `docker`.
+2. El contenedor **`cloudflared`** del túnel corriendo y unido a la red `codevia-proxy-net`
+   (en su `compose.yaml`: `networks: [default, codevia-proxy-net]` y la red como `external: true`).
+3. Cada dominio publicado como ruta del túnel (ver abajo).
 
 ---
 
@@ -63,26 +57,38 @@ Solo `nginx-proxy` publica los puertos 80 y 443. Las apps no exponen puertos al 
 ```bash
 # 1. Desde la carpeta deploy/
 cp .env.example .env
-nano .env          # rellena passwords, JWT_SECRET, etc.
+chmod 600 .env
+nano .env          # rellena passwords, JWT secrets, etc.
 
 # 2. Levanta todo
 make up
-# o: docker compose -f docker-compose.yml up -d
 
-# 3. Comprueba el estado
+# 3. Comprueba el estado (todos "healthy")
 make ps
 
-# 4. Observa la emisión de certificados (tarda 1-2 min tras propagar DNS)
-make certs
+# 4. Solo la primera vez: crea y siembra la base de Córdoba Bets
+make cb-init
 ```
 
-> **Importante**: los certificados solo se emiten si los tres dominios ya resuelven
-> a la IP del servidor. Si el DNS aún no ha propagado, arranca primero solo el proxy:
-> ```bash
-> docker compose -f docker-compose.yml up -d nginx-proxy acme-companion
-> # Espera propagación DNS (~5-30 min), luego:
-> make up
-> ```
+Para **mudar** el despliegue a otra máquina no hace falta sembrar: se copia la carpeta, se
+levanta `crm-db`, se restaura un `pg_dumpall` (ver "Copias") y después `make up`.
+
+---
+
+## Publicar un dominio
+
+En Cloudflare → **Networking → Tunnels → tunnel-hugo → Routes → Add route →
+Published application**:
+
+| Campo | Valor |
+|---|---|
+| Subdomain | `crm` (vacío para `codeviaesp.com`) |
+| Domain | `codeviaesp.com` |
+| Service URL | `http://nginx-proxy:80` |
+
+Cloudflare crea solo el registro DNS. Si ya existe un registro `A`/`AAAA`/`CNAME` con ese
+nombre, hay que borrarlo antes. Además, el contenedor tiene que declarar el dominio en
+`VIRTUAL_HOST` para que `nginx-proxy` lo enrute.
 
 ---
 
@@ -106,7 +112,7 @@ make rebuild-landing  # Tras un git pull: reconstruye imagen y redeploya
 
 ### Demos en vivo (demo-*.codeviaesp.com)
 ```bash
-make demos-up          # Levantar las 3 plantillas
+make demos-up          # Levantar las plantillas
 make demos-down        # Parar
 make demos-restart     # Reiniciar
 make demos-logs        # Logs en tiempo real
@@ -132,53 +138,30 @@ make rebuild-crm      # Tras un git pull: reconstruye y redeploya
 ```
 
 ### Córdoba Bets (cordobabets.codeviaesp.com)
-
 ```bash
 make cb-up            # API + web
 make cb-logs
 make rebuild-cb
 make cb-init          # solo la primera vez: crea la BD, migra y siembra
 make cb-importar      # carga el histórico de Pickeando
+bash poner-token-cb.sh   # guarda el token del bot de Telegram sin que se vea
 ```
 
-### Auditoría de IA (auditoria.codeviaesp.com + gw.codeviaesp.com)
+⚠️ El bot de Telegram lee con *long polling*: **nunca puede haber dos copias con el mismo
+token** (por ejemplo, el servidor y un `npm run dev` local). Telegram las hace pelear y se
+pierden mensajes del canal.
 
+### Breakpoint Tennis (breakpoint.codeviaesp.com)
 ```bash
-make ia-up            # API + gateway + panel
-make ia-logs
-make rebuild-ia
-make ia-init          # solo la primera vez: crea la BD, migra y siembra
-make ia-migrar        # aplica migraciones pendientes
-make ia-sembrar       # recarga catálogo de modelos y consejos (idempotente)
+make bp-up            # API + web
+make bp-logs
+make rebuild-bp
 ```
+La contraseña del panel no va en `.env`: ver `BREAKPOINT-TENNIS/README.md`.
 
-**Antes del primer `make ia-up` hay que crear la clave maestra**, que es lo que cifra las
-claves de API de los clientes. No está en `.env` ni en git, es un fichero montado como
-secreto de Docker para que no aparezca en `docker inspect`:
-
+### Proxy
 ```bash
-mkdir -p secretos
-openssl rand -base64 32 | sed 's/^/g1:/' > secretos/clave_maestra
-chmod 600 secretos/clave_maestra
-```
-
-⚠️ **Guardar una copia de ese fichero fuera del servidor**, en el gestor de contraseñas.
-Si se pierde, las credenciales de proveedor de todos los clientes son irrecuperables y el
-servicio cae para todos a la vez. Un backup de PostgreSQL sin la clave maestra no sirve
-para restaurarlas — que es, de hecho, la propiedad que se busca.
-
-El gateway tarda en parar: tiene `stop_grace_period: 60s` porque al recibir SIGTERM espera
-a que terminen los streams en curso antes de cerrar. Es a propósito.
-
-**Copiar también `vhost.d/auditoria.codeviaesp.com`** a `/opt/codevia/deploy/vhost.d/` (y
-reiniciar `nginx-proxy`). Sube a 10 MB el límite de cuerpo del panel: sin él, cuando un
-empleado envíe meses de uso con el comando de auditoría, nginx-proxy lo cortará con un 413
-antes de llegar a la API.
-
-### Proxy y certificados
-```bash
-make certs            # Ver logs del acme-companion (estado de certificados)
-make proxy-logs       # Logs en tiempo real del proxy
+make proxy-logs       # Logs en tiempo real de nginx-proxy
 ```
 
 ---
@@ -194,6 +177,8 @@ make rebuild-landing   # solo si cambió la landing
 make rebuild-demos     # solo si cambió alguna plantilla demo
 make rebuild-hugo      # solo si cambió el portfolio de Hugo
 make rebuild-crm       # solo si cambió el CRM
+make rebuild-cb        # solo si cambió Córdoba Bets
+make rebuild-bp        # solo si cambió Breakpoint
 ```
 
 `rebuild-*` reconstruye la imagen y hace `up --no-deps` del servicio, sin tocar
@@ -201,69 +186,32 @@ el proxy ni la base de datos.
 
 ---
 
-## Datos persistentes
+## Datos persistentes y copias
 
 | Volumen Docker | Contenido |
 |----------------|-----------|
-| `crm-postgres-data` | Base de datos PostgreSQL del CRM |
-| `nginx-certs` | Certificados TLS emitidos por Let's Encrypt |
-| `nginx-html` | Archivos temporales de desafío ACME |
-| `nginx-acme` | Estado interno de acme.sh |
-| `auditoria-cola` | Cola en disco del gateway de IA: eventos que no pudieron llegar a PostgreSQL. Se reingiere al arrancar |
+| `crm-postgres-data` | PostgreSQL con las tres bases: `codevia_crm`, `cordobabets`, `breakpoint` |
 
-Los volúmenes **sobreviven** a `make down`. Solo se pierden con:
-```bash
-docker compose -f docker-compose.yml down -v   # ¡BORRA los datos!
+Sobrevive a `make down`. Solo se pierde con `docker compose down -v` (**¡BORRA los datos!**).
+
+**Copia diaria:** `backup-bd.sh` hace un `pg_dumpall` de todas las bases en `../backups`
+(`diaria-AAAAMMDD-HHMM.sql.gz`) y guarda las 14 últimas. Está en el crontab del usuario:
+
+```
+30 4 * * * /home/hugo/stacks/codevia/deploy/backup-bd.sh >> /home/hugo/stacks/codevia/backups/backup.log 2>&1
 ```
 
-Para hacer backup. Ojo: en el contenedor `codevia-crm-db` conviven **tres** bases de
-datos, una por proyecto. `pg_dump` de una sola no las salva todas:
-```bash
-# Una base concreta
-docker exec codevia-crm-db pg_dump -U codevia codevia_crm > crm_$(date +%Y%m%d).sql
-
-# Todas de golpe, que es lo que casi siempre se quiere
-docker exec codevia-crm-db pg_dumpall -U codevia > todo_$(date +%Y%m%d).sql
-```
-El backup de `auditoria_ia` contiene las claves de API de los clientes **cifradas**. Sin
-el fichero `secretos/clave_maestra` no se pueden restaurar: hay que guardar los dos.
-
----
-
-## Firewall (ejecutar en el servidor Linux vía SSH)
-
-Antes de habilitar el firewall, **asegúrate de que SSH queda permitido**:
+`make backup` lanza una copia en el momento. Restaurar (borra y recrea las bases; parar
+antes las API para que no haya conexiones abiertas):
 
 ```bash
-sudo ufw status                  # ver estado actual
-sudo ufw allow 22/tcp            # SSH — imprescindible antes de enable
-sudo ufw allow 80/tcp            # HTTP
-sudo ufw allow 443/tcp           # HTTPS
-sudo ufw enable                  # activar (pedirá confirmación)
-sudo ufw status                  # verificar
+make crm-down cb-down bp-down
+zcat ../backups/diaria-XXXX.sql.gz | docker exec -i codevia-crm-db sh -c 'psql -U "$POSTGRES_USER" -d postgres'
+make up
 ```
 
-> Si el servidor usa un puerto SSH distinto al 22, cámbialo en el comando `allow`.
-> Verifica el puerto con: `sudo ss -tlnp | grep sshd`
-
----
-
-## Verificar certificados HTTPS
-
-```bash
-# Estado de emisión
-make certs
-
-# Prueba de conectividad HTTPS
-curl -I https://codeviaesp.com
-curl -I https://crm.codeviaesp.com
-
-# Verificar emisor Let's Encrypt
-echo | openssl s_client -connect codeviaesp.com:443 -servername codeviaesp.com 2>/dev/null | grep issuer
-echo | openssl s_client -connect crm.codeviaesp.com:443 -servername crm.codeviaesp.com 2>/dev/null | grep issuer
-```
-
-Los certificados se renuevan automáticamente cuando quedan menos de 30 días.
+Los dos únicos errores esperables al restaurar son `current user cannot be dropped` y
+`role "codevia" already exists`.
 
 ---
 
@@ -271,11 +219,14 @@ Los certificados se renuevan automáticamente cuando quedan menos de 30 días.
 
 - **API routing del CRM**: `crm.codeviaesp.com/api/*` se enruta al backend (puerto 4000)
   mediante un override en `vhost.d/crm.codeviaesp.com`. El resto del tráfico va al
-  frontend (puerto 5173). El timeout de proxy es 300s para acomodar los jobs de
-  scraping con Playwright.
-- **Primera build del CRM backend**: la imagen base `playwright:v1.48.0-jammy` pesa
-  ~1.5 GB. La primera vez tardará varios minutos.
-- **Migraciones y seed**: el backend ejecuta `prisma migrate deploy && npm run seed`
+  frontend (puerto 5173).
+- **Límite de 100 s de Cloudflare**: Cloudflare corta cualquier petición que tarde más de
+  100 segundos (no es configurable en el plan gratuito). Por eso las búsquedas del
+  Scraper del CRM corren en segundo plano y el frontend consulta su estado. Cualquier
+  endpoint nuevo que pueda tardar debe seguir el mismo patrón.
+- **Primera build del CRM backend**: la imagen lleva Chromium (Playwright) y pesa
+  ~3,5 GB. La primera vez tardará varios minutos.
+- **Migraciones y seed**: el backend del CRM ejecuta `prisma migrate deploy && npm run seed`
   en cada arranque. El seed es idempotente (no crea duplicados).
 - **Google Places API**: si `GOOGLE_PLACES_API_KEY` está vacía, el scraper usa
-  Playwright como fallback automáticamente.
+  Playwright como fallback automáticamente (más lento, varios minutos por búsqueda).

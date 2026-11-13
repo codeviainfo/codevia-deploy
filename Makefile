@@ -8,8 +8,8 @@ COMPOSE := docker compose -f docker-compose.yml
         hugo-up hugo-down hugo-restart hugo-logs rebuild-hugo \
         crm-up crm-down crm-restart crm-logs rebuild-crm \
         cb-up cb-down cb-restart cb-logs rebuild-cb cb-init cb-importar \
-        ia-up ia-down ia-restart ia-logs rebuild-ia ia-init ia-migrar ia-sembrar \
-        certs proxy-logs
+        bp-up bp-down bp-restart bp-logs rebuild-bp \
+        backup proxy-logs
 
 # ─────────────────────────────────────────────
 # Ayuda
@@ -58,19 +58,16 @@ help:
 	@echo "    make cb-init         Crea la BD, migra y siembra"
 	@echo "    make cb-importar     Carga el histórico de Pickeando"
 	@echo ""
-	@echo "  Auditoría de IA (auditoria + gw .codeviaesp.com):"
-	@echo "    make ia-up           Levanta API + gateway + panel"
-	@echo "    make ia-down         Para panel + gateway + API (DB queda activa)"
-	@echo "    make ia-restart      Reinicia los tres"
-	@echo "    make ia-logs         Logs en tiempo real"
-	@echo "    make rebuild-ia      Reconstruye imágenes y redeploya"
-	@echo "    make ia-init         Crea la BD, migra y siembra (primera vez)"
-	@echo "    make ia-migrar       Aplica migraciones pendientes"
-	@echo "    make ia-sembrar      Recarga catálogo de modelos y consejos"
+	@echo "  Breakpoint Tennis (breakpoint.codeviaesp.com):"
+	@echo "    make bp-up           Levanta API + web"
+	@echo "    make bp-down         Para web + API (DB queda activa)"
+	@echo "    make bp-restart      Reinicia API + web"
+	@echo "    make bp-logs         Logs en tiempo real"
+	@echo "    make rebuild-bp      Reconstruye imágenes y redeploya"
 	@echo ""
-	@echo "  Proxy / Certificados:"
-	@echo "    make certs           Últimas 100 líneas de logs del acme-companion"
-	@echo "    make proxy-logs      Logs en tiempo real del proxy y acme"
+	@echo "  Otros:"
+	@echo "    make backup          Copia de todas las bases ahora mismo (../backups)"
+	@echo "    make proxy-logs      Logs en tiempo real de nginx-proxy"
 	@echo ""
 
 # ─────────────────────────────────────────────
@@ -194,53 +191,29 @@ rebuild-crm:
 	$(COMPOSE) up -d --no-deps crm-backend crm-frontend
 
 # ─────────────────────────────────────────────
-# Auditoría de IA (API + gateway + panel)
-#
-# El gateway se arranca EL PRIMERO y se para EL ÚLTIMO: es el camino
-# crítico de los empleados del cliente, y cada segundo que está abajo
-# es gente que no puede trabajar. Además tiene stop_grace_period 60s
-# en el compose, así que `ia-down` tarda: es a propósito, está
-# esperando a que terminen los streams en curso.
+# Breakpoint Tennis (web + API; la DB del CRM se inicia si hace falta)
 # ─────────────────────────────────────────────
-ia-up:
-	$(COMPOSE) up -d crm-db auditoria-gateway auditoria-api auditoria-web
+bp-up:
+	$(COMPOSE) up -d breakpoint-api breakpoint-web
 
-ia-down:
-	$(COMPOSE) stop auditoria-web auditoria-api auditoria-gateway
+bp-down:
+	$(COMPOSE) stop breakpoint-web breakpoint-api
 
-ia-restart:
-	$(COMPOSE) restart auditoria-api auditoria-web auditoria-gateway
+bp-restart:
+	$(COMPOSE) restart breakpoint-api breakpoint-web
 
-ia-logs:
-	$(COMPOSE) logs -f auditoria-api auditoria-gateway auditoria-web
+bp-logs:
+	$(COMPOSE) logs -f breakpoint-api breakpoint-web
 
-rebuild-ia:
-	$(COMPOSE) build auditoria-api auditoria-gateway auditoria-web
-	$(COMPOSE) up -d --no-deps auditoria-api auditoria-gateway auditoria-web
-
-# Crea la base de datos dentro del PostgreSQL del CRM (solo la primera
-# vez; si ya existe no pasa nada), aplica el esquema y siembra el
-# catálogo de modelos, los consejos y el administrador del panel.
-ia-init:
-	$(COMPOSE) exec -T crm-db psql -U $$POSTGRES_USER -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='$$AUDITORIA_DB'" | grep -q 1 || \
-		$(COMPOSE) exec -T crm-db psql -U $$POSTGRES_USER -d postgres -c "CREATE DATABASE $$AUDITORIA_DB"
-	$(COMPOSE) exec -T auditoria-api npm run prisma:migrate
-	$(COMPOSE) exec -T auditoria-api npm run seed
-
-ia-migrar:
-	$(COMPOSE) exec -T auditoria-api npm run prisma:migrate
-
-# Idempotente. NO pisa precios ya existentes: si un proveedor cambia
-# sus tarifas hay que añadir una fila nueva con vigenteDesde, porque
-# editar la vigente reescribiría el coste histórico de los clientes.
-ia-sembrar:
-	$(COMPOSE) exec -T auditoria-api npm run seed
+rebuild-bp:
+	$(COMPOSE) build breakpoint-api breakpoint-web
+	$(COMPOSE) up -d --no-deps breakpoint-api breakpoint-web
 
 # ─────────────────────────────────────────────
-# Proxy / Certificados
+# Copias y proxy
 # ─────────────────────────────────────────────
-certs:
-	docker logs nginx-acme-companion --tail 100
+backup:
+	./backup-bd.sh
 
 proxy-logs:
-	$(COMPOSE) logs -f nginx-proxy acme-companion
+	$(COMPOSE) logs -f nginx-proxy
