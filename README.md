@@ -166,7 +166,42 @@ make proxy-logs       # Logs en tiempo real de nginx-proxy
 
 ---
 
-## Actualizar tras un cambio de código
+## Despliegue automático
+
+Un push a `main` de cualquier proyecto se despliega solo en unos minutos: el
+servidor **tira** de GitHub, nadie entra en él. `autodespliegue.sh` corre cada
+2 minutos desde el crontab del usuario:
+
+```
+*/2 * * * * /home/hugo/stacks/codevia/deploy/autodespliegue.sh >/dev/null 2>&1
+```
+
+Por cada proyecto (landing, demos, portfolio, CRM, Córdoba Bets y Breakpoint):
+si `origin/main` tiene un commit nuevo, lo baja, reconstruye solo ese servicio
+y comprueba por Cloudflare que sus URLs dan 200.
+
+- **Un build a la vez** (`flock`): con 865 MB de RAM, dos a la vez tumban la VM.
+- **Córdoba Bets y Breakpoint migran la base de datos** con la imagen nueva antes
+  de cambiar el contenedor. Si la migración falla, sigue la versión anterior.
+- **Un commit que falla no se reintenta en bucle**: se espera al siguiente o se
+  fuerza con `./autodespliegue.sh --forzar CARPETA`.
+- Los commits que solo tocan `.github/`, `*.md` o `docs/` se bajan sin reconstruir.
+- Si alguien ha tocado ficheros a mano en el servidor, no se pisan: se avisa en
+  el registro y no se despliega hasta limpiarlos.
+- Registro en `../autodespliegue.log` (con la salida de los builds) y estado en
+  `../.autodespliegue/`.
+- **`deploy/` no se actualiza solo**, a propósito: un cambio de compose o del
+  Makefile suele venir con variables nuevas en `.env`. Ese se aplica a mano.
+
+Los repos privados se leen con *deploy keys* de solo lectura, una por repo
+(GitHub no deja repetir una), con alias en `~/.ssh/config`:
+`git@github-crm:codeviainfo/codeviacrm.git`. Los públicos van por HTTPS.
+
+Por qué así y no con GitHub Actions entrando por SSH: la VM no admite
+conexiones entrantes, y abrirle una puerta a GitHub costaba una tarjeta en
+Cloudflare Zero Trust o tocar las reglas de la red de Tailscale compartida.
+
+## Actualizar a mano
 
 ```bash
 # En el servidor, dentro del directorio del proyecto:
