@@ -156,12 +156,14 @@ pierden mensajes del canal.
 make bp-up            # API + web
 make bp-logs
 make rebuild-bp
-bash poner-bot-bp.sh  # activa el bot de Telegram: token (sin que se vea) + tu id de chat
+bash poner-bot-bp.sh  # activa el bot de Telegram: token (sin que se vea), tu id de chat y el canal
 ```
 
 El bot de Breakpoint tiene que ser **otro bot** distinto al de Córdoba Bets (el script
-lo comprueba). El canal (`BREAKPOINT_TELEGRAM_CANAL`) es opcional: sin él no registra solo
-lo que se publica, pero el chat privado sirve igual para ver y resolver los pendientes.
+lo comprueba). El canal (`BREAKPOINT_TELEGRAM_CANAL`) es opcional: el script lo pide
+reenviándole al bot un mensaje del canal, y el bot tiene que ser administrador del canal.
+Sin él no registra solo lo que se publica, pero el chat privado sirve igual para ver y
+resolver los pendientes.
 La contraseña del panel no va en `.env`: ver `BREAKPOINT-TENNIS/README.md`.
 
 ### Proxy
